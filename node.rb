@@ -1,3 +1,4 @@
+require 'set'
 require 'socket'
 require 'thread'
 
@@ -36,26 +37,6 @@ $FTP_HEADER_TYPE = 21
 # whitespace.
 $DELIM = "~"
 $IMPROBABLE_STRING = "!@$!@%$!@$^&$^"
-
-class Debug
-
-	$debug_on = true
-
-	class AssertError < RuntimeError
-	end
-
-	def Debug.disable()
-		$debug_on = false
-	end
-
-	def Debug.assert
-		if $debug_on
-			works = yield
-			raise AssertError.new() unless works
-		end
-	end
-end
-
 
 class Message
   HEADER_LENGTH = 20 # header length in bytes
@@ -156,8 +137,7 @@ class Message
   end
 end
 
-
-class CtrlMsg
+module CtrlMsg
 
   def CtrlMsg.callback(msg, client)
     case msg.getHeaderField("type")
@@ -624,8 +604,7 @@ class CtrlMsg
   end
 end
 
-
-class Util
+module Util
   def Util.readNodeFile(filename)
     f = File.open(filename, "r")
     f.each_line do |line|
@@ -765,8 +744,29 @@ class Util
 
 end
 
+module Debug
+
+	$debug_on = true
+
+	class AssertError < RuntimeError
+	end
+
+	def Debug.disable()
+		$debug_on = false
+	end
+
+	def Debug.assert
+		if $debug_on
+			works = yield
+			raise AssertError.new() unless works
+		end
+	end
+end
+
+
+
 # --------------------- Part 0 --------------------- # 
-  def edgeb(cmd)
+def edgeb(cmd)
     srcip = cmd[0]
     dstip = cmd[1]
     dst = cmd[2]
@@ -787,9 +787,9 @@ end
       CtrlMsg.receive(s)
     }
     STDOUT.puts "EDGEB: SUCCESS"
-  end
+end
 
-  def dumptable(cmd)
+def dumptable(cmd)
     output_filename = cmd[0]
     output = File.open(output_filename, "w")
     $port_table.each do |dst, port|
@@ -803,9 +803,9 @@ end
     output << $circuit_table
     output.close
     STDOUT.puts "DUMPTABLE: SUCCESS"
-  end
+end
 
-  def shutdown(cmd)
+def shutdown(cmd)
     if $server != nil
       $server.close
     end
@@ -817,11 +817,11 @@ end
     STDOUT.flush
     STDERR.flush
     exit(0)
-  end
+end
 
 # --------------------- Part 1 --------------------- # 
 def edgeu(cmd)
-    dst = cmd[0]
+	dst = cmd[0]
     cost = cmd[1].to_i
     $distance_table[dst] = cost
     $neighbors[dst] = cost
@@ -835,55 +835,47 @@ def edgeu(cmd)
 end
 
 def edged(cmd)
-  dst = cmd[0]
-  $ip_table.delete(dst)
-  $distance_table[dst] = "INF"
-  $neighbors.delete(dst)
-  $next_hop_table[dst] = "NA"
-  client = $clients[dst]
-  client.close()
-  $clients.delete(dst)
-  CtrlMsg.flood()
-  STDOUT.puts "EDGED: SUCCESS"
+	dst = cmd[0]
+    $ip_table.delete(dst)
+    $distance_table[dst] = "INF"
+    $neighbors.delete(dst)
+    $next_hop_table[dst] = "NA"
+    client = $clients[dst]
+    client.close()
+    $clients.delete(dst)
+    CtrlMsg.flood()
+    STDOUT.puts "EDGED: SUCCESS"
 end
 
 def status()
-  neighbors = []
-  $neighbors.each do |node, distance|
-    neighbors << node
-  end
-  neighbors.sort
-  msg = "Name: " + $hostname + "\n"
-  msg += "Port: " + $port + "\n"
-  msg += "Neighbors: " 
-  neighbors.each do |node|
-    msg += node + ","
-  end
-  if msg[-1] == ","
-    msg = msg.chop
-  end
-  STDOUT.puts msg
+	neighbors = []
+    $neighbors.each do |node, distance|
+      neighbors << node
+    end
+    neighbors.sort
+    msg = "Name: " + $hostname + "\n"
+    msg += "Port: " + $port + "\n"
+    msg += "Neighbors: " 
+    neighbors.each do |node|
+      msg += node + ","
+    end
+    if msg[-1] == ","
+      msg = msg.chop
+    end
+    STDOUT.puts msg
 end
 
 # --------------------- Part 2 --------------------- # 
-def ping(cmd, circuit = false, circuit_id = nil)
-  STDOUT.puts($network_topology)
-    dst = cmd[0]
+def sendmsg(cmd)
+	STDOUT.puts "SENDMSG: not implemented"
+end
+
+def ping(cmd)
+	dst = cmd[0]
     next_hop = $next_hop_table[dst]
-    if circuit
-      if $circuit_table.has_key?(circuit_id) and $circuit_table[circuit_id].has_key?(dst)
-        next_hop = $circuit_table[circuit_id][dst]
-      else
-        next_hop = "NA"
-      end
-    end
     if next_hop == "NA" || next_hop == $hostname
-      if circuit
-        STDOUT.puts ("CIRCUIT #{circuit_id} /" + "PING ERROR: HOST UNREACHABLE")
-      else
-        STDOUT.puts "PING ERROR: HOST UNREACHABLE"
-      end
-      return
+		STDOUT.puts "PING ERROR: HOST UNREACHABLE"
+      	return
     end
     n = cmd[1].to_i
     delay = cmd[2].to_i
@@ -893,21 +885,13 @@ def ping(cmd, circuit = false, circuit_id = nil)
       msg.setHeaderField("type", 3)
       msg.setHeaderField("code", 0)
       msg.setPayLoad($hostname + " " + dst + " " + seq_id.to_s)
-      if circuit
-        msg.setHeaderField("circuit", 1)
-        msg.setPayLoad($hostname + " " + dst + " " + seq_id.to_s + " " + circuit_id)
-      end
       $ping_table[seq_id.to_s] = $current_time
       CtrlMsg.send(client, msg)
       Thread.new {
         seq_id_ = seq_id
         sleep($ping_timeout)
         if $ping_table.has_key?(seq_id_.to_s)
-          if circuit
-            STDOUT.puts ("CIRCUIT #{circuit_id} /" + "PING ERROR: HOST UNREACHABLE")
-          else
-            STDOUT.puts "PING ERROR: HOST UNREACHABLE"
-          end
+			STDOUT.puts "PING ERROR: HOST UNREACHABLE"
         end
         $ping_table.delete(seq_id_.to_s)
       }
@@ -915,266 +899,44 @@ def ping(cmd, circuit = false, circuit_id = nil)
     end
 end
 
-def traceroute(cmd, circuit = false, circuit_id = nil)
-  dst = cmd[0]
-  next_hop = $next_hop_table[dst]
-  if circuit
-    if $circuit_table.has_key?(circuit_id) and $circuit_table[circuit_id].has_key?(dst)
-      next_hop = $circuit_table[circuit_id][dst]
-    else
-      next_hop = "NA"
+def traceroute(cmd)
+	dst = cmd[0]
+    next_hop = $next_hop_table[dst]
+    if next_hop == "NA"
+		STDOUT.puts "TRACEROUTE ERROR: HOST UNREACHABLE"
+      	return
     end
-  end
-  if next_hop == "NA"
-    if circuit
-      STDOUT.puts ("CIRCUIT " + circuit_id + " /" + "TRACEROUTE ERROR: HOST UNREACHABLE")
-    else
-      STDOUT.puts "TRACEROUTE ERROR: HOST UNREACHABLE"
+	STDOUT.puts("0 " + $hostname + " 0.00")
+    if next_hop == $hostname
+      return
     end
-    return
-  end
-  if circuit
-    STDOUT.puts("CIRCUIT #{circuit_id} /" + "0 " + $hostname + " 0.00")
-  else
-    STDOUT.puts("0 " + $hostname + " 0.00")
-  end
-  if next_hop == $hostname
-    return
-  end
-  client = $clients[next_hop]
-  msg = Message.new
-  msg.setHeaderField("type", 4)
-  msg.setHeaderField("code", 0)
-  msg.setPayLoad($hostname + " " + dst + " " + dst + " 0 " + $current_time.to_f.round(4).to_s)
-  if circuit
-    msg.setHeaderField("circuit", 1)
-    msg.setPayLoad($hostname + " " + dst + " " + dst + " 0 " + $current_time.to_f.round(4).to_s + " " + circuit_id)
-  end
-  $traceroute_finish = false
-  $expect_hop_count = "1"
-  CtrlMsg.send(client, msg)
-  start_time = $current_time
-  while $current_time - start_time < $ping_timeout
-    if $traceroute_finish
-      if circuit
-        STDOUT.puts ("CIRCUIT " + circuit_id + " /" + "TRACEROUTE: SUCCESS")
-      else
-        STDOUT.puts "TRACEROUTE: SUCCESS"
+    client = $clients[next_hop]
+    msg = Message.new
+    msg.setHeaderField("type", 4)
+    msg.setHeaderField("code", 0)
+    msg.setPayLoad($hostname + " " + dst + " " + dst + " 0 " + $current_time.to_f.round(4).to_s)
+    $traceroute_finish = false
+    $expect_hop_count = "1"
+    CtrlMsg.send(client, msg)
+    start_time = $current_time
+    while $current_time - start_time < $ping_timeout
+      if $traceroute_finish
+		STDOUT.puts "TRACEROUTE: SUCCESS"
+        return
       end
-      return
+      sleep(0.1)
     end
-    sleep(0.1)
-  end
-  if circuit
-    STDOUT.puts("CIRCUIT " + circuit_id + " /" +"TIMEOUT ON HOPCOUNT " + $expect_hop_count)
-  else
-    STDOUT.puts("TIMEOUT ON HOPCOUNT " + $expect_hop_count)
-  end
+	STDOUT.puts("TIMEOUT ON HOPCOUNT " + $expect_hop_count)
 end
 
-def sendmsg(cmd, circuit = false, circuit_id = nil)
-  Debug.assert { cmd.length() >= 2 }
-  Debug.assert { cmd.kind_of?(Array) }
-  
-  dst = cmd[0]
-  
-  circuit_id_str = circuit_id.to_s()
-  if circuit_id == nil
-    circuit_id_str = "nil"
-  end
-  msg = circuit_id_str + " " + $hostname + " " + dst + " " + cmd[1..-1].join(" ")
-
-  error_msg = "SENDMSG ERROR: HOST UNREACHABLE"
-
-  # Make sure dst is reachable
-  if circuit
-    Debug.assert {circuit_id != nil}
-    error_msg = "CIRCUIT #{circuit_id}/" + error_msg
-    if $circuit_table.has_key?(circuit_id) && $circuit_table[circuit_id].has_key?(dst)
-      next_hop = $circuit_table[circuit_id][dst]
-    else
-      STDOUT.puts(error_msg)
-      return
-    end
-  elsif ($next_hop_table.include?(dst) && $next_hop_table[dst] != "NA" &&
-      $clients.has_key?($next_hop_table[dst]))
-    next_hop = $next_hop_table[dst]
-  else
-    STDOUT.puts(error_msg)
-    return
-  end
-  
-  client = $clients[next_hop]
-  
-  # Construct the packet
-  packet = Message.new()
-  packet.setHeaderField("type", $SENDMSG_HEADER_TYPE)
-  packet.setHeaderField("code", 0)
-  packet.setPayLoad(msg)
-  
-  if circuit
-    packet.setHeaderField("circuit", 1)
-  else
-    packet.setHeaderField("circuit", 0)
-  end
-
-  success = CtrlMsg.send(client, packet)
-  if !success
-    STDOUT.puts(error_msg)
-  end
-end
-
-def ftp(cmd, circuit = false, circuit_id = nil)
-  Debug.assert { cmd.length() >= 3 }
-  Debug.assert { cmd.kind_of?(Array) }
-  
-  dst,fname,fpath = cmd[0], cmd[1], cmd[2]
-
-  success_output = "FTP #{fname} -- > #{dst} in %s at %s"
-  error_output = "FTP ERROR: #{fname} -- > #{dst} INTERRUPTED AFTER %s"
-  
-
-  if circuit_id == nil
-    circuit_id_str = "nil"
-  else
-    circuit_id_str = circuit_id.to_s()
-  end
-
-
-  # Make sure dst is reachable
-  if circuit
-    Debug.assert { circuit_id != nil }
-    prefix = "CIRCUIT #{circuit_id}/"
-    success_output = prefix + success_output
-    error_output = prefix + error_output
-    
-    if $circuit_table.has_key?(circuit_id) && $circuit_table[circuit_id].has_key?(dst)
-      next_hop = $circuit_table[circuit_id][dst]
-    else
-      STDOUT.puts(error_output % ["0"])
-      return
-    end
-  elsif ($next_hop_table.include?(dst) && $next_hop_table[dst] != "NA" &&
-      $clients.has_key?($next_hop_table[dst]))
-    next_hop = $next_hop_table[dst]
-  else
-    STDOUT.puts(error_output % ["0"])
-    return
-  end
-
-  client = $clients[next_hop]
-
-  # Construct the packet, keeping tabs on its length
-  file_obj = File.open(fname, "r")
-  file_contents = file_obj.read()
-  file_obj.close()
-
-  file_size = file_contents.bytesize()
-  file_contents.gsub!("\n", $IMPROBABLE_STRING)
-  msg = [circuit_id_str, $hostname, dst, file_size.to_s(), fname, fpath, file_contents].join($DELIM)
-  msg_offset = msg.bytesize() - file_size
-
-  packet = Message.new()
-  packet.setHeaderField("type", $FTP_HEADER_TYPE)
-  packet.setHeaderField("code", 0)
-  
-  if circuit
-    packet.setHeaderField("circuit", 1)
-  else
-    packet.setHeaderField("circuit", 0)
-  end
-
-  packet.setPayLoad(msg)
-  header_offset = packet.toString().bytesize() - msg_offset - file_size + "\n".bytesize()
-
-  packet_offset = msg_offset
-  total_bytes_sent = 0
-
-  # Send the (fragmented) packet, keeping tabs on how many bytes reach the
-  # destination
-  packet_list = packet.fragment()
-  t_start = $current_time
-  
-  packet_list.each do |packet|
-    to_send = packet.toString() + "\n"
-    packet_offset += header_offset
-    num_bytes = to_send.bytesize()
-    check = client.write(to_send)
-    total_bytes_sent += check
-    
-    if check < num_bytes
-      bytes_from_file_sent = total_bytes_sent - packet_offset
-      STDOUT.puts(error_output % [bytes_from_file_sent])
-      return
-    end
-  end
-  
-  t_end = $current_time
-  t_total = t_end - t_start
-
-  bytes_from_file_sent = total_bytes_sent - packet_offset
-  speed = bytes_from_file_sent / t_total
-
-  STDOUT.puts(success_output % [t_total, speed])
+def ftp(cmd)
+	STDOUT.puts "FTP: not implemented"
 end
 
 # --------------------- Part 3 --------------------- # 
-def circuitb(cmd)
-    id = cmd[0]
-    dst = cmd[1]
-    hops = cmd[2]
-    $circuit_info[id] = {"dst" => dst, "hops" => hops}
-    hops_array = hops.split(",")
-    hops_len = hops_array.length
-    next_hop = nil
-    if hops_len == 0
-      next_hop = dst
-    else
-      next_hop = hops_array[0]
-    end
-    $circuit_table[id] = Hash.new()
-    hops_array.each do |hop|
-      $circuit_table[id][hop] = next_hop
-    end
-    $circuit_table[id][dst] = next_hop
-    msg = Message.new
-    msg.setHeaderField("type", 7)
-    payload = id + " " + dst + " " + $hostname + " " + hops + " " + $hostname
-    msg.setPayLoad(payload)
-    CtrlMsg.send($clients[next_hop], msg)
+def circuit(cmd)
+	STDOUT.puts "CIRCUIT: not implemented"
 end
-
-  def circuitm(arr)
-    id = arr[0]
-    cmd = arr[1]
-    args = arr[2..-1]
-    case cmd
-    when "SENDMSG"; P2.sendmsg(args, true, id)
-    when "PING"; P2.ping(args, true, id)
-    when "TRACEROUTE"; P2.traceroute(args, true, id)
-    when "FTP"; P2.ftp(args, true, id)
-    else STDERR.puts "ERROR: INVALID COMMAND FOR CIRCUITM"
-    end
-  end
-
-  def circuitd(cmd)
-    id = cmd[0]
-    dst = $circuit_info[id]["dst"]
-    hops = $circuit_info[id]["hops"]
-    hops_array = hops.split(",")
-    hops_len = hops_array.length
-    next_hop = nil
-    if hops_len == 0
-      next_hop = dst
-    else
-      next_hop = hops_array[0]
-    end
-    msg = Message.new
-    msg.setHeaderField("type", 8)
-    payload = id + " " + dst + " " + $hostname + " " + hops + " " + $hostname
-    msg.setPayLoad(payload)
-    CtrlMsg.send($clients[next_hop], msg)
-  end
 
 def startServer()
 	server = TCPServer.open($port_table[$hostname])
@@ -1219,13 +981,13 @@ def main()
 			when "DUMPTABLE"; dumptable(args)
 			when "SHUTDOWN"; shutdown(args)
 			when "STATUS"; status()
-			when "SENDMSG"; sendmsg(args)
+			when "SNDMSG"; P2.sendmsg(args)
 			when "PING"; ping(args)
 			when "TRACEROUTE"; traceroute(args)
-			when "FTP"; ftp(args)
-			when "CIRCUITB"; circuitb(args)
-			when "CIRCUITD"; circuitd(args)
-			when "CIRCUITM"; circuitm(args)
+			when "FTP"; P2.ftp(args)
+			when "CIRCUITB"; P3.circuitb(args)
+			when "CIRCUITD"; P3.circuitd(args)
+			when "CIRCUITM"; P3.circuitm(args)
 			else STDERR.puts "ERROR: INVALID COMMAND \"#{cmd}\""
 			end
 # 		}
