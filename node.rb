@@ -24,8 +24,6 @@ $flood_triger = 0
 $ping_table = Hash.new()
 $traceroute_finish = true
 $expect_hop_count = "1"
-$circuit_table = Hash.new()
-$circuit_info = Hash.new()
 
 # SENDMSG Constants and fields
 $SENDMSG_HEADER_TYPE = 20
@@ -47,8 +45,7 @@ class Message
     "ttl" => [4,4],
     "seq" => [5,5],
     "fragment_num" => [6,6],
-    "fragment_seq" => [7,7],
-    "circuit" => [8,8],
+    "fragment_seq" => [7,7]
   }
 
   def initialize(msg = nil)
@@ -147,9 +144,6 @@ module CtrlMsg
     when 3; CtrlMsg.pingCallBack(msg)
     when 4; CtrlMsg.tracerouteCallBack(msg)
     when $SENDMSG_HEADER_TYPE; CtrlMsg.sendmsgCallBack(msg, client)
-    when $FTP_HEADER_TYPE; CtrlMsg.ftpCallBack(msg, client)
-    when 7; CtrlMsg.circuitbCallBack(msg)
-    when 8; CtrlMsg.circuitdCallBack(msg)
     else STDERR.puts "ERROR: INVALID MESSAGE \"#{msg}\""
     end
   end
@@ -271,29 +265,18 @@ module CtrlMsg
 
   def CtrlMsg.pingCallBack(msg)
     code = msg.getHeaderField("code")
-    circuit = (msg.getHeaderField("circuit") == 1)
     payload = msg.getPayLoad.split(' ')
     src = payload[0]
     dst = payload[1]
     seq_id = payload[2]
-    circuit_id = nil
-    if circuit
-      circuit_id = payload[3]
-    end
     if code == 0
       # forwrd
       if dst == $hostname
         msg.setHeaderField("code", 1)
         client = $clients[$next_hop_table[src]]
-        if circuit
-          client = $clients[$circuit_table[circuit_id][src]]
-        end
         CtrlMsg.send(client, msg)
       else
         client = $clients[$next_hop_table[dst]]
-        if circuit
-          client = $clients[$circuit_table[circuit_id][dst]]
-        end
         CtrlMsg.send(client, msg)
       end
     else
@@ -301,18 +284,11 @@ module CtrlMsg
       if src == $hostname
         if $ping_table.has_key?(seq_id)
           rtp = $current_time - $ping_table[seq_id]
-          if circuit
-            STDOUT.puts ("CIRCUIT " + circuit_id + " /" + seq_id + " " + dst + " " + rtp.to_s)
-          else
-            STDOUT.puts (seq_id + " " + dst + " " + rtp.to_s)
-          end
+          STDOUT.puts (seq_id + " " + dst + " " + rtp.to_s)
           $ping_table.delete(seq_id)
         end
       else
         client = $clients[$next_hop_table[src]]
-        if circuit
-          client = $clients[$circuit_table[circuit_id][src]]
-        end
         CtrlMsg.send(client, msg)
       end
     end
@@ -320,17 +296,12 @@ module CtrlMsg
 
   def CtrlMsg.tracerouteCallBack(msg)
     code = msg.getHeaderField("code")
-    circuit = (msg.getHeaderField("circuit") == 1)
     payload = msg.getPayLoad.split(' ')
     src = payload[0]
     dst = payload[1]
     host_id = payload[2]
     hop_count = payload[3]
     time = payload[4]
-    circuit_id = nil
-    if circuit
-      circuit_id = payload[5]
-    end
     if code == 0
       # forwrd
       hop_count = (hop_count.to_i + 1).to_s
@@ -341,41 +312,23 @@ module CtrlMsg
       ret_msg = Message.new
       ret_msg.setHeaderField("type", 4)
       ret_msg.setHeaderField("code", 1)
-      if circuit
-        ret_msg.setHeaderField("circuit", 1)
-      end
       ret_msg.setPayLoad(ret_payload.join(" "))
-      if circuit
-        CtrlMsg.send($clients[$circuit_table[circuit_id][src]], ret_msg)
-      else
-        CtrlMsg.send($clients[$next_hop_table[src]], ret_msg)
-      end
+      CtrlMsg.send($clients[$next_hop_table[src]], ret_msg)
       if dst != $hostname
         payload[3] = hop_count
         msg.setPayLoad(payload.join(" "))
-        if circuit
-          CtrlMsg.send($clients[$circuit_table[circuit_id][dst]], msg)
-        else
-          CtrlMsg.send($clients[$next_hop_table[dst]], msg)
-        end
+        CtrlMsg.send($clients[$next_hop_table[dst]], msg)
       end
     else
       # backward
       if src == $hostname
-        if circuit
-          STDOUT.puts("CIRCUIT " + circuit_id + " /" +hop_count + " " + host_id + " " + time)
-        else
-          STDOUT.puts(hop_count + " " + host_id + " " + time)
-        end
+        STDOUT.puts(hop_count + " " + host_id + " " + time)
         $expect_hop_count = (hop_count.to_i + 1).to_s
         if host_id == dst 
           $traceroute_finish = true
         end
       else
         client = $clients[$next_hop_table[src]]
-        if circuit
-          client = $clients[$circuit_table[circuit_id][src]]
-        end
         CtrlMsg.send(client, msg)
       end
     end
@@ -577,7 +530,6 @@ def dumptable(cmd)
     output << $network_topology
     output << $distance_table
     output << $next_hop_table
-    output << $circuit_table
     output.close
     STDOUT.puts "DUMPTABLE: SUCCESS"
 end
@@ -778,10 +730,6 @@ def main()
 			when "SNDMSG"; sendmsg(args)
 			when "PING"; ping(args)
 			when "TRACEROUTE"; traceroute(args)
-			when "FTP"; P2.ftp(args)
-			when "CIRCUITB"; P3.circuitb(args)
-			when "CIRCUITD"; P3.circuitd(args)
-			when "CIRCUITM"; P3.circuitm(args)
 			else STDERR.puts "ERROR: INVALID COMMAND \"#{cmd}\""
 			end
 # 		}
