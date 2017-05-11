@@ -2,41 +2,33 @@ require 'set'
 require 'socket'
 require 'thread'
 
-$sequence_num = 0
+#Global Variables
 $port = nil
 $hostname = nil
-$neighbors = Hash.new()
-$port_table = Hash.new()
-$ip_table = Hash.new()
-$distance_table = Hash.new("INF")
-$next_hop_table = Hash.new("NA")
-$server = nil
-$clients = Hash.new()
-$network_topology = Hash.new()
-$mtu = 4
-$update_interval = nil
-$ping_timeout = nil
-$receiver_buffer = []
 $mutex = Mutex.new
-$cv = ConditionVariable.new
-$current_time = nil
-$flood_triger = 0
+$clients = Hash.new()
+$dist = Hash.new("INF")
+$next = Hash.new("NA")
+$neighbors = Hash.new()
+$ips = Hash.new()
+$ports = Hash.new()
+$server = nil
+$ping_timeout = nil
+$mtu = nil
+$update_interval = nil
+$sequence_num = 0
+$networks = Hash.new()
 $ping_table = Hash.new()
+$currtime = nil
+$receiver_buffer = []
+$flood_trigger = 0
 $traceroute_finish = true
-$expect_hop_count = "1"
+$hop_counter = "1"
 
 # SENDMSG Constants and fields
 $SENDMSG_HEADER_TYPE = 20
 
-# FTP Constants and fields
-$FTP_HEADER_TYPE = 21
-
-# The delimiter for elements of a message. I noticed just using " " caused errors with other
-# whitespace.
-$DELIM = "~"
-$IMPROBABLE_STRING = "!@$!@%$!@$^&$^"
-
-class Message
+class Msg
   HEADER_LENGTH = 20 # header length in bytes
   HEADER_CONFIG = {
     "type" => [0,0], # type field = [start_index, end_index]
@@ -72,7 +64,7 @@ class Message
     return @header
   end
 
-  def setHeaderField(field_name, n)
+  def setConfig(field_name, n)
     field_range = HEADER_CONFIG[field_name]
     # STDOUT.puts n
     @header[field_range[0]..field_range[1]] = n.chr
@@ -84,7 +76,7 @@ class Message
     return res
   end
 
-  def setPayLoad(payload)
+  def setIpAndHost(payload)
     @payload = payload
   end
 
@@ -107,11 +99,11 @@ class Message
       fragment_seq = 1
 
       payload_list.each do |payload|
-        msg = Message.new
+        msg = Msg.new
         msg.setHeader(String.new(@header))
-        msg.setHeaderField("fragment_num", fragment_num)
-        msg.setHeaderField("fragment_seq", fragment_seq)
-        msg.setPayLoad(payload)
+        msg.setConfig("fragment_num", fragment_num)
+        msg.setConfig("fragment_seq", fragment_seq)
+        msg.setIpAndHost(payload)
         packet_list << msg
         fragment_seq += 1
       end
@@ -134,6 +126,19 @@ class Message
   end
 end
 
+def sendMessage(client, msg)
+  packet_list = msg.fragment()
+  packet_list.each do |packet|
+    to_send = packet.toString() + "\n"
+    num_bytes = to_send.bytesize()
+    check = client.write(to_send)
+    if check < num_bytes
+      return false
+    end
+  end
+  return true
+end
+
 module CtrlMsg
 
   def CtrlMsg.callback(msg, client)
@@ -148,26 +153,11 @@ module CtrlMsg
     end
   end
 
-  def CtrlMsg.send(client, msg)
-#     STDOUT.puts "In send"
-#     STDOUT.puts msg.getPayLoad
-    packet_list = msg.fragment()
-    packet_list.each do |packet|
-      to_send = packet.toString() + "\n"
-      num_bytes = to_send.bytesize()
-      check = client.write(to_send)
-      if check < num_bytes
-        return false
-      end
-    end
-    return true
-  end
-
   def CtrlMsg.receive(client)
     while msg_str = client.gets
-      if (msg_str.length >= Message::HEADER_LENGTH + 1 and Message.new(msg_str.chop).validate)
+      if (msg_str.length >= Msg::HEADER_LENGTH + 1 and Msg.new(msg_str.chop).validate)
         $mutex.synchronize {
-          msg = Message.new(msg_str.chop)
+          msg = Msg.new(msg_str.chop)
 #           STDOUT.puts "In receive"
 #           STDOUT.puts msg_str.length
 #           STDOUT.puts msg.getPayLoad
@@ -194,11 +184,11 @@ module CtrlMsg
     dstip = msg[0]
     srcip = msg[1]
     dst = msg[2]
-    $ip_table[$hostname] = srcip
-    $ip_table[dst] = dstip
-    $distance_table[dst] = 1
+    $ips[$hostname] = srcip
+    $ips[dst] = dstip
+    $dist[dst] = 1
     $neighbors[dst] = 1
-    $next_hop_table[dst] = dst
+    $next[dst] = dst
     $clients[dst] = client
     CtrlMsg.flood()
     STDOUT.puts "CTRLMSG-EDGEB: SUCCESS"
@@ -208,25 +198,25 @@ module CtrlMsg
     msg = msg.split(' ')
     dst = msg[0]
     cost = msg[1].to_i
-    $distance_table[dst] = cost
+    $dist[dst] = cost
     $neighbors[dst] = cost
     CtrlMsg.flood()
     STDOUT.puts "CTRLMSG-EDGEU: SUCCESS"
   end
 
   def CtrlMsg.flood()
-    msg = Message.new
-    msg.setHeaderField("type", 1)
-    msg.setHeaderField("ttl", $port_table.length)
-    msg.setHeaderField("seq", Util.nextSeqNum())
+    msg = Msg.new
+    msg.setConfig("type", 1)
+    msg.setConfig("ttl", $ports.length)
+    msg.setConfig("seq", Util.nextSeqNum())
     msg_str = $hostname + "\t"
     if $neighbors.length > 0
       $neighbors.each do |dst, distance|
         msg_str += dst + "," + distance.to_s + "\t"
       end
-      msg.setPayLoad(msg_str)
+      msg.setIpAndHost(msg_str)
       $clients.each do |dst, client|  
-        CtrlMsg.send(client, msg)
+        sendMessage(client, msg)
       end
 #       STDOUT.puts "CTRLMSG-FLOOD: SUCCESS"
     end
@@ -243,16 +233,16 @@ module CtrlMsg
       msg_payload = msg.getPayLoad()
       payload_array = msg_payload.split("\t")
       host = payload_array[0]
-      if (host != $hostname and ($network_topology[host] == nil or $network_topology[host]["sn"] != sn))
+      if (host != $hostname and ($networks[host] == nil or $networks[host]["sn"] != sn))
         host_dist_tbl = Hash.new()
         for i in 1..(payload_array.length - 1)
           neighbor_dist_pair = payload_array[i].split(",")
           host_dist_tbl[neighbor_dist_pair[0]] = neighbor_dist_pair[1].to_i
         end
-        $network_topology[host] = {"sn" => sn, "neighbors" => host_dist_tbl}
-        msg.setHeaderField("ttl", ttl - 1)
+        $networks[host] = {"sn" => sn, "neighbors" => host_dist_tbl}
+        msg.setConfig("ttl", ttl - 1)
         $clients.each do |dst, client|
-          CtrlMsg.send(client, msg)
+          sendMessage(client, msg)
         end
         if Util.checkTopology
           Util.updateRoutingTable()
@@ -272,24 +262,24 @@ module CtrlMsg
     if code == 0
       # forwrd
       if dst == $hostname
-        msg.setHeaderField("code", 1)
-        client = $clients[$next_hop_table[src]]
-        CtrlMsg.send(client, msg)
+        msg.setConfig("code", 1)
+        client = $clients[$next[src]]
+        sendMessage(client, msg)
       else
-        client = $clients[$next_hop_table[dst]]
-        CtrlMsg.send(client, msg)
+        client = $clients[$next[dst]]
+        sendMessage(client, msg)
       end
     else
       # backward
       if src == $hostname
         if $ping_table.has_key?(seq_id)
-          rtp = $current_time - $ping_table[seq_id]
+          rtp = $currtime - $ping_table[seq_id]
           STDOUT.puts (seq_id + " " + dst + " " + rtp.to_s)
           $ping_table.delete(seq_id)
         end
       else
-        client = $clients[$next_hop_table[src]]
-        CtrlMsg.send(client, msg)
+        client = $clients[$next[src]]
+        sendMessage(client, msg)
       end
     end
   end
@@ -308,28 +298,28 @@ module CtrlMsg
       ret_payload = Array.new(payload)
       ret_payload[2] = $hostname
       ret_payload[3] = hop_count
-      ret_payload[4] = ($current_time.to_f.round(4) - time.to_f).round(4).abs.to_s
-      ret_msg = Message.new
-      ret_msg.setHeaderField("type", 4)
-      ret_msg.setHeaderField("code", 1)
-      ret_msg.setPayLoad(ret_payload.join(" "))
-      CtrlMsg.send($clients[$next_hop_table[src]], ret_msg)
+      ret_payload[4] = ($currtime.to_f.round(4) - time.to_f).round(4).abs.to_s
+      ret_msg = Msg.new
+      ret_msg.setConfig("type", 4)
+      ret_msg.setConfig("code", 1)
+      ret_msg.setIpAndHost(ret_payload.join(" "))
+      sendMessage($clients[$next[src]], ret_msg)
       if dst != $hostname
         payload[3] = hop_count
-        msg.setPayLoad(payload.join(" "))
-        CtrlMsg.send($clients[$next_hop_table[dst]], msg)
+        msg.setIpAndHost(payload.join(" "))
+        sendMessage($clients[$next[dst]], msg)
       end
     else
       # backward
       if src == $hostname
         STDOUT.puts(hop_count + " " + host_id + " " + time)
-        $expect_hop_count = (hop_count.to_i + 1).to_s
+        $hop_counter = (hop_count.to_i + 1).to_s
         if host_id == dst 
           $traceroute_finish = true
         end
       else
-        client = $clients[$next_hop_table[src]]
-        CtrlMsg.send(client, msg)
+        client = $clients[$next[src]]
+        sendMessage(client, msg)
       end
     end
   end
@@ -347,9 +337,9 @@ module CtrlMsg
       payload = payload.join(" ")
       STDOUT.puts(to_print % [src, payload])
     else
-      k = $next_hop_table[dst]
+      k = $next[dst]
       forward_client = $clients[k]
-      CtrlMsg.send(forward_client, msg)
+      sendMessage(forward_client, msg)
     end
   end
   
@@ -363,9 +353,9 @@ module Util
       arr = line.split(',')
       node = arr[0]
       port = arr[1]
-      $port_table[node] = port
-      $distance_table[node] = "INF"
-      $next_hop_table[node] = "NA"
+      $ports[node] = port
+      $dist[node] = "INF"
+      $next[node] = "NA"
     end
     f.close
   end
@@ -425,7 +415,7 @@ module Util
   def Util.findMinDistNode(sptSet)
     min_dist = "INF"
     min_node = nil
-    $distance_table.each do |node, dist|
+    $dist.each do |node, dist|
       if isSmaller(dist, min_dist) and !(sptSet.include? node)
         min_dist = dist
         min_node = node
@@ -436,23 +426,23 @@ module Util
 
   def Util.updateRoutingTable()
   # Dijkstra’s shortest path algorithm    
-    $distance_table.each do |node, dist|
+    $dist.each do |node, dist|
       if node != $hostname
-        $distance_table[node] = "INF"
+        $dist[node] = "INF"
       end
     end
     sptSet = []
-    while sptSet.length < $network_topology.length
+    while sptSet.length < $networks.length
       current_node = findMinDistNode(sptSet)
       sptSet << current_node
-      dist_to_current_node = $distance_table[current_node]
-      neighbor_dist_tbl = $network_topology[current_node]["neighbors"]
+      dist_to_current_node = $dist[current_node]
+      neighbor_dist_tbl = $networks[current_node]["neighbors"]
       neighbor_dist_tbl.each do |neighbor, dist|
         proposed_dist = dist_to_current_node + dist
-        if isSmaller(proposed_dist, $distance_table[neighbor])
-          $distance_table[neighbor] = proposed_dist
+        if isSmaller(proposed_dist, $dist[neighbor])
+          $dist[neighbor] = proposed_dist
           if current_node != $hostname
-            $next_hop_table[neighbor] = $next_hop_table[current_node]
+            $next[neighbor] = $next[current_node]
           end
         end
       end
@@ -463,7 +453,7 @@ module Util
     # check whether the network topology is complete
     src = []
     neighbors = []
-    $network_topology.each do |s, nb|
+    $networks.each do |s, nb|
       src << s
       nb["neighbors"].each do |s_, dist|
         neighbors << s_
@@ -482,14 +472,14 @@ module Util
     # assert_operator packet_list.length, :>, 0
     payload_full_str = ""
     hdr = String.new(packet_list[0].getHeader())
-    msg = Message.new
+    msg = Msg.new
     msg.setHeader(hdr)
-    msg.setHeaderField("fragment_num", 0)
-    msg.setHeaderField("fragment_seq", 0)
+    msg.setConfig("fragment_num", 0)
+    msg.setConfig("fragment_seq", 0)
     packet_list.each do |packet|
       payload_full_str += packet.getPayLoad()
     end
-    msg.setPayLoad(payload_full_str)
+    msg.setIpAndHost(payload_full_str)
     return msg
   end
 
@@ -497,41 +487,59 @@ end
 
 # --------------------- Part 0 --------------------- # 
 def edgeb(cmd)
-    srcip = cmd[0]
-    dstip = cmd[1]
-    dst = cmd[2]
-    $ip_table[$hostname] = srcip
-    $ip_table[dst] = dstip
-    $distance_table[dst] = 1
-    $neighbors[dst] = 1
-    $next_hop_table[dst] = dst
-    port = $port_table[dst]
-    s = TCPSocket.open(dstip, port)
-    $clients[dst] = s
-    msg = Message.new
-    msg.setHeaderField("type", 0)
-    msg.setPayLoad(srcip + "," + dstip + "," + $hostname)
-    CtrlMsg.send(s, msg)
-    CtrlMsg.flood()
-    Thread.new {
-      CtrlMsg.receive(s)
-    }
-    STDOUT.puts "EDGEB: SUCCESS"
+  # cmd is a list of arguments given in the call cmd[0] -> source ip, cmd[1] -> dest ip, cmd[2] -> dest #
+  srcip = cmd[0]
+  dstip = cmd[1]
+  dst = cmd[2]
+  $neighbors[dst] = 1
+  $next[dst] = dst
+  $ips[$hostname] = srcip
+  $ips[dst] = dstip
+  $dist[dst] = 1
+  port = $ports[dst]
+
+   # Opens TCP socket
+  s = TCPSocket.open(dstip, port)
+  $clients[dst] = s
+
+  # This will create a new message, setting it's type to 0 (edgebReflex) and pass in
+  # the ip of the host, destination, and the hostname
+  msg = Msg.new
+  msg.setConfig("type", 0)
+  msg.setIpAndHost(srcip + "," + dstip + "," + $hostname)
+  sendMessage(s, msg)
+  CtrlMsg.flood()
+  Thread.new {
+    CtrlMsg.receive(s)
+  }
 end
 
 def dumptable(cmd)
-    output_filename = cmd[0]
-    output = File.open(output_filename, "w")
-    $port_table.each do |dst, port|
-      next_hop = $next_hop_table[dst]
-      distance = $distance_table[dst]
-      output << $hostname << "," << dst << "," << next_hop << "," << distance << "\n"
+  output = File.open(cmd[0], "w")
+  tempArr = Array.new
+  count = 0
+  
+  # This loop will run through all the ports in the port list "ports". It will
+  # make sure that the hostname is not the destination, that there is a next hop 
+  # and a distance. This will also keep a counter for how many entires in our routing table
+  $ports.each do |dst, port|
+    nextHop = $next[dst]
+    distance = $dist[dst]
+    if (($hostname != dst) && (nextHop != "NA") && (distance != "INF"))
+      tempArr[count] = [$hostname, dst, nextHop, distance]
+      count = count + 1
     end
-    output << $network_topology
-    output << $distance_table
-    output << $next_hop_table
-    output.close
-    STDOUT.puts "DUMPTABLE: SUCCESS"
+  end
+
+  # We then sort the routing table then pass it into output
+  i = 0
+  sorted = tempArr.sort {|a,b| a[1] <=> b[1]}
+  while i < count
+    resp = sorted[i]
+    output << resp[0] << "," << resp[1] << "," << resp[2] << "," << resp[3] << "\n"
+    i = i + 1
+  end
+  output.close
 end
 
 def shutdown(cmd)
@@ -552,23 +560,23 @@ end
 def edgeu(cmd)
 	dst = cmd[0]
     cost = cmd[1].to_i
-    $distance_table[dst] = cost
+    $dist[dst] = cost
     $neighbors[dst] = cost
     client = $clients[dst]
-    msg = Message.new
-    msg.setHeaderField("type", 2)
-    msg.setPayLoad($hostname + " " + cost.to_s)
-    CtrlMsg.send(client, msg)
+    msg = Msg.new
+    msg.setConfig("type", 2)
+    msg.setIpAndHost($hostname + " " + cost.to_s)
+    sendMessage(client, msg)
     CtrlMsg.flood()
     STDOUT.puts "EDGEU: SUCCESS"
 end
 
 def edged(cmd)
 	dst = cmd[0]
-    $ip_table.delete(dst)
-    $distance_table[dst] = "INF"
+    $ips.delete(dst)
+    $dist[dst] = "INF"
     $neighbors.delete(dst)
-    $next_hop_table[dst] = "NA"
+    $next[dst] = "NA"
     client = $clients[dst]
     client.close()
     $clients.delete(dst)
@@ -603,9 +611,9 @@ def sendmsg(cmd)
     error_msg = "SENDMSG ERROR: HOST UNREACHABLE"
 
     # Make sure dst is reachable
-    if ($next_hop_table.include?(dst) && $next_hop_table[dst] != "NA" &&
-        $clients.has_key?($next_hop_table[dst]))
-      next_hop = $next_hop_table[dst]
+    if ($next.include?(dst) && $next[dst] != "NA" &&
+        $clients.has_key?($next[dst]))
+      next_hop = $next[dst]
     else
       STDOUT.puts(error_msg)
       return
@@ -614,12 +622,12 @@ def sendmsg(cmd)
     client = $clients[next_hop]
     
     # Construct the packet
-    packet = Message.new()
-    packet.setHeaderField("type", $SENDMSG_HEADER_TYPE)
-    packet.setHeaderField("code", 0)
-    packet.setPayLoad(msg)
+    packet = Msg.new()
+    packet.setConfig("type", $SENDMSG_HEADER_TYPE)
+    packet.setConfig("code", 0)
+    packet.setIpAndHost(msg)
 
-    success = CtrlMsg.send(client, packet)
+    success = sendMessage(client, packet)
     if !success
       STDOUT.puts(error_msg)
     end
@@ -627,7 +635,7 @@ end
 
 def ping(cmd)
 	dst = cmd[0]
-    next_hop = $next_hop_table[dst]
+    next_hop = $next[dst]
     if next_hop == "NA" || next_hop == $hostname
 		STDOUT.puts "PING ERROR: HOST UNREACHABLE"
       	return
@@ -636,12 +644,12 @@ def ping(cmd)
     delay = cmd[2].to_i
     client = $clients[next_hop]
     for seq_id in (0..(n - 1))
-      msg = Message.new
-      msg.setHeaderField("type", 3)
-      msg.setHeaderField("code", 0)
-      msg.setPayLoad($hostname + " " + dst + " " + seq_id.to_s)
-      $ping_table[seq_id.to_s] = $current_time
-      CtrlMsg.send(client, msg)
+      msg = Msg.new
+      msg.setConfig("type", 3)
+      msg.setConfig("code", 0)
+      msg.setIpAndHost($hostname + " " + dst + " " + seq_id.to_s)
+      $ping_table[seq_id.to_s] = $currtime
+      sendMessage(client, msg)
       Thread.new {
         seq_id_ = seq_id
         sleep($ping_timeout)
@@ -656,7 +664,7 @@ end
 
 def traceroute(cmd)
 	dst = cmd[0]
-    next_hop = $next_hop_table[dst]
+    next_hop = $next[dst]
     if next_hop == "NA"
 		STDOUT.puts "TRACEROUTE ERROR: HOST UNREACHABLE"
       	return
@@ -666,28 +674,28 @@ def traceroute(cmd)
       return
     end
     client = $clients[next_hop]
-    msg = Message.new
-    msg.setHeaderField("type", 4)
-    msg.setHeaderField("code", 0)
-    msg.setPayLoad($hostname + " " + dst + " " + dst + " 0 " + $current_time.to_f.round(4).to_s)
+    msg = Msg.new
+    msg.setConfig("type", 4)
+    msg.setConfig("code", 0)
+    msg.setIpAndHost($hostname + " " + dst + " " + dst + " 0 " + $currtime.to_f.round(4).to_s)
     $traceroute_finish = false
-    $expect_hop_count = "1"
-    CtrlMsg.send(client, msg)
-    start_time = $current_time
-    while $current_time - start_time < $ping_timeout
+    $hop_counter = "1"
+    sendMessage(client, msg)
+    start_time = $currtime
+    while $currtime - start_time < $ping_timeout
       if $traceroute_finish
 		STDOUT.puts "TRACEROUTE: SUCCESS"
         return
       end
       sleep(0.1)
     end
-	STDOUT.puts("TIMEOUT ON HOPCOUNT " + $expect_hop_count)
+	STDOUT.puts("TIMEOUT ON HOPCOUNT " + $hop_counter)
 end
 
 # --------------------- Part 3 --------------------- # 
 
 def startServer()
-	server = TCPServer.open($port_table[$hostname])
+	server = TCPServer.open($ports[$hostname])
 	loop {
 		Thread.start(server.accept) do |client|
 	    	CtrlMsg.receive(client)
@@ -697,10 +705,10 @@ end
 
 def updateTime()
 	loop {
-			$current_time += 0.01
-      $flood_triger += 0.01
-      if $flood_triger >= $update_interval
-        $flood_triger = 0
+			$currtime += 0.01
+      $flood_trigger += 0.01
+      if $flood_trigger >= $update_interval
+        $flood_trigger = 0
         Thread.new {
           $mutex.synchronize {
             CtrlMsg.flood()
@@ -738,8 +746,8 @@ def main()
 end
 
 def setup(hostname, port, nodes, config)
-	$current_time = Time.now
-  $flood_triger = 0
+	$currtime = Time.now
+  $flood_trigger = 0
 	Thread.new {
    	updateTime()
   }
@@ -747,9 +755,9 @@ def setup(hostname, port, nodes, config)
 	$port = port
 	Util.readNodeFile(nodes)
 	$update_interval, $mtu, $ping_timeout = Util.parse_config_file(config)
-	$distance_table[hostname] = 0
-	$next_hop_table[hostname] = hostname
-	$network_topology[$hostname] = {"neighbors" => $neighbors}
+	$dist[hostname] = 0
+	$next[hostname] = hostname
+	$networks[$hostname] = {"neighbors" => $neighbors}
 	Thread.new {
     	startServer()
   	}
