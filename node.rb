@@ -385,223 +385,21 @@ module CtrlMsg
     code = msg.getHeaderField("code")
     payload = msg.getPayLoad().split(" ")
     
-    is_circuit = (msg.getHeaderField("circuit") == 1)
-    
-    circuit_id = payload.shift()
     src = payload.shift()
     dst = payload.shift()
     
-    to_print = "SENDMSG: %s -- > %s"
-   
-    if is_circuit
-      Debug.assert {circuit_id != "nil"}
-      to_print = "CIRCUIT #{circuit_id}/" + to_print
-    end
+    to_print = "SNDMSG: %s --> %s"
 
     if dst == $hostname
       payload = payload.join(" ")
       STDOUT.puts(to_print % [src, payload])
     else
-      if is_circuit
-        k = $circuit_table[circuit_id][dst]
-      else
-        k = $next_hop_table[dst]
-      end
+      k = $next_hop_table[dst]
       forward_client = $clients[k]
       CtrlMsg.send(forward_client, msg)
     end
   end
   
-  def CtrlMsg.ftpCallBack(msg, client)
-    
-    payload = msg.getPayLoad().split($DELIM)
-  
-    is_circuit = (msg.getHeaderField("circuit") == 1)
-
-    circuit_id = payload.shift()
-
-    src = payload.shift()
-    dst = payload.shift()
-    
-    if dst == $hostname  
-      file_size_ideal = payload.shift().to_i()
-      fname = payload.shift()
-      fpath = payload.shift()
-      file_content = payload.join($DELIM).gsub($IMPROBABLE_STRING, "\n")
-      
-      success_output = "FTP: #{src} -- > #{fpath}/#{fname}"
-      error_output = "FTP ERROR: #{src} -- > #{fpath}/#{fname}"
-
-      if is_circuit
-        Debug.assert {circuit_id != nil}
-        prefix = "CIRCUIT #{circuit_id}/"
-        success_output = prefix + success_output
-        error_output = prefix + error_output
-      end
-
-
-      file_size_actual = file_content.bytesize()
-      if file_size_actual < file_size_ideal
-        STDOUT.puts(error_output)
-      else
-        File.write(fpath + "/" + fname, file_content)
-        STDOUT.puts(success_output)
-      end
-    else
-      if is_circuit
-        k = $circuit_table[circuit_id][dst]
-      else
-        k = $next_hop_table[dst]
-      end
-      forward_client = $clients[k]
-      CtrlMsg.send(forward_client, msg)
-    end
-  end
-
-  def CtrlMsg.circuitbCallBack(msg)
-    code = msg.getHeaderField("code")
-    payload = msg.getPayLoad.split(' ')
-    id = payload[0]
-    dst = payload[1]
-    from = payload[2]
-    hops = payload[3]
-    src = payload[4]
-    hops_array = hops.split(",")
-    found_circuit = ($circuit_table.length > 0)
-    if code == 0
-      $circuit_table[id] = Hash.new
-      if dst == $hostname
-        prev_hop = from
-        hops_array.each do |h|
-          $circuit_table[id][h] = prev_hop
-        end
-        $circuit_table[id][src] = prev_hop
-        STDOUT.puts "CIRCUIT #{src}/#{id} --> #{dst} over #{hops}"
-        msg = Message.new
-        msg.setHeaderField("type", 7)
-        msg.setHeaderField("code", 1)
-        payload = id + " " + dst + " " + $hostname + " " + hops + " " + src
-        msg.setPayLoad(payload)
-        CtrlMsg.send($clients[prev_hop], msg)
-      else
-        current_i = hops_array.rindex($hostname)
-        if current_i >0
-          for i in 0..(current_i - 1)
-            $circuit_table[id][hops_array[i]] = hops_array[current_i - 1]
-          end
-        end
-        prev_hop = from
-        $circuit_table[id][src] = prev_hop
-        if (current_i + 1) <= (hops_array.length - 1)
-          for i in (current_i + 1)..(hops_array.length - 1)
-            $circuit_table[id][hops_array[i]] = hops_array[current_i + 1]
-          end
-        end
-        next_hop = hops_array[current_i + 1]
-        if next_hop == nil
-          next_hop = dst
-        end
-        $circuit_table[id][dst] = next_hop
-        client = $clients[next_hop]
-        if (client == nil or found_circuit)
-          $circuit_table.clear
-          msg = Message.new
-          msg.setHeaderField("type", 7)
-          msg.setHeaderField("code", 2)
-          payload = id + " " + dst + " " + $hostname + " " + hops + " " + src + " " + next_hop
-          msg.setPayLoad(payload)
-          CtrlMsg.send($clients[prev_hop], msg)
-        else
-          msg = Message.new
-          msg.setHeaderField("type", 7)
-          payload = id + " " + dst + " " + $hostname + " " + hops + " " + src
-          msg.setPayLoad(payload)
-          CtrlMsg.send($clients[next_hop], msg)
-        end
-      end
-    else
-      if src == $hostname
-        if code == 1
-          STDOUT.puts "CIRCUITB #{id} --> #{dst} over #{hops}"
-        else
-          $circuit_table.clear
-          fnode = payload[5]
-          STDOUT.puts "CIRCUIT ERROR: #{src} -/-> #{dst} FAILED AT #{fnode}"
-        end
-      else
-        if code == 2
-          $circuit_table.clear
-        end
-        current_i = hops_array.rindex($hostname)
-        prev_hop = hops_array[current_i - 1]
-        if current_i == 0
-          prev_hop = src
-        end
-        CtrlMsg.send($clients[prev_hop], msg)
-      end
-    end
-  end
-
-  def CtrlMsg.circuitdCallBack(msg)
-    code = msg.getHeaderField("code")
-    payload = msg.getPayLoad.split(' ')
-    id = payload[0]
-    dst = payload[1]
-    from = payload[2]
-    hops = payload[3]
-    src = payload[4]
-    hops_array = hops.split(",")
-    $circuit_table.clear
-    if code == 0
-      if dst == $hostname
-        prev_hop = from
-        msg = Message.new
-        msg.setHeaderField("type", 8)
-        msg.setHeaderField("code", 1)
-        payload = id + " " + dst + " " + $hostname + " " + hops + " " + src
-        msg.setPayLoad(payload)
-        CtrlMsg.send($clients[prev_hop], msg)
-      else
-        current_i = hops_array.rindex($hostname)
-        prev_hop = from
-        next_hop = hops_array[current_i + 1]
-        if next_hop == nil
-          next_hop = dst
-        end
-        client = $clients[next_hop]
-        if (client == nil)
-          msg = Message.new
-          msg.setHeaderField("type", 8)
-          msg.setHeaderField("code", 2)
-          payload = id + " " + dst + " " + $hostname + " " + hops + " " + src + " " + next_hop
-          msg.setPayLoad(payload)
-          CtrlMsg.send($clients[prev_hop], msg)
-        else
-          msg = Message.new
-          msg.setHeaderField("type", 8)
-          payload = id + " " + dst + " " + $hostname + " " + hops + " " + src
-          msg.setPayLoad(payload)
-          CtrlMsg.send($clients[next_hop], msg)
-        end
-      end
-    else
-      if src == $hostname
-        if code == 1
-          STDOUT.puts "CIRCUITD #{id} --> #{dst} over #{hops}"
-        else
-          fnode = payload[5]
-          STDOUT.puts "CIRCUIT ERROR: #{src} -/-> #{dst} FAILED AT #{fnode}"
-        end
-      else
-        current_i = hops_array.rindex($hostname)
-        prev_hop = hops_array[current_i - 1]
-        if current_i == 0
-          prev_hop = src
-        end
-        CtrlMsg.send($clients[prev_hop], msg)
-      end
-    end
-  end
 end
 
 module Util
@@ -744,27 +542,6 @@ module Util
 
 end
 
-module Debug
-
-	$debug_on = true
-
-	class AssertError < RuntimeError
-	end
-
-	def Debug.disable()
-		$debug_on = false
-	end
-
-	def Debug.assert
-		if $debug_on
-			works = yield
-			raise AssertError.new() unless works
-		end
-	end
-end
-
-
-
 # --------------------- Part 0 --------------------- # 
 def edgeb(cmd)
     srcip = cmd[0]
@@ -867,7 +644,33 @@ end
 
 # --------------------- Part 2 --------------------- # 
 def sendmsg(cmd)
-	STDOUT.puts "SENDMSG: not implemented"
+	dst = cmd[0]
+   
+    msg = $hostname + " " + dst + " " + cmd[1..-1].join(" ")
+  
+    error_msg = "SENDMSG ERROR: HOST UNREACHABLE"
+
+    # Make sure dst is reachable
+    if ($next_hop_table.include?(dst) && $next_hop_table[dst] != "NA" &&
+        $clients.has_key?($next_hop_table[dst]))
+      next_hop = $next_hop_table[dst]
+    else
+      STDOUT.puts(error_msg)
+      return
+    end
+    
+    client = $clients[next_hop]
+    
+    # Construct the packet
+    packet = Message.new()
+    packet.setHeaderField("type", $SENDMSG_HEADER_TYPE)
+    packet.setHeaderField("code", 0)
+    packet.setPayLoad(msg)
+
+    success = CtrlMsg.send(client, packet)
+    if !success
+      STDOUT.puts(error_msg)
+    end
 end
 
 def ping(cmd)
@@ -929,14 +732,7 @@ def traceroute(cmd)
 	STDOUT.puts("TIMEOUT ON HOPCOUNT " + $expect_hop_count)
 end
 
-def ftp(cmd)
-	STDOUT.puts "FTP: not implemented"
-end
-
 # --------------------- Part 3 --------------------- # 
-def circuit(cmd)
-	STDOUT.puts "CIRCUIT: not implemented"
-end
 
 def startServer()
 	server = TCPServer.open($port_table[$hostname])
@@ -966,8 +762,6 @@ end
 # do main loop here.... 
 def main()
 
-  #Debug.disable()
-
 	while(line = STDIN.gets())
 # 		$mutex.synchronize {
 			line = line.strip()
@@ -981,7 +775,7 @@ def main()
 			when "DUMPTABLE"; dumptable(args)
 			when "SHUTDOWN"; shutdown(args)
 			when "STATUS"; status()
-			when "SNDMSG"; P2.sendmsg(args)
+			when "SNDMSG"; sendmsg(args)
 			when "PING"; ping(args)
 			when "TRACEROUTE"; traceroute(args)
 			when "FTP"; P2.ftp(args)
